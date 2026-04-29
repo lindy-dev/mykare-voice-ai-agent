@@ -4,6 +4,10 @@ tests/
 eval/
 evals/
 
+# Database
+data/
+*.db
+
 # Python bytecode and artifacts
 __pycache__/
 *.py[cod]
