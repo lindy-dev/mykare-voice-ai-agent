@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -15,7 +16,11 @@ from livekit.agents import (
     cli,
     function_tool,
     inference,
+    get_job_context,
+    metrics,
+    MetricsCollectedEvent,
     room_io,
+    ChatContext,
 )
 from livekit.plugins import ai_coustics, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
@@ -105,6 +110,28 @@ def _format_date(date_str: str) -> str:
     ordinal = _get_ordinal(day)
     month_name = _MONTH_NAMES[month - 1]
     return f"{day_name}, {month_name} {ordinal}"
+
+
+async def _send_tool_status(
+    room,
+    tool: str,
+    status: str,
+    message: str,
+) -> None:
+    """Send a tool-call status update to the first remote (frontend) participant."""
+    
+    frontend = next(iter(room.remote_participants.values()), None)
+    if frontend is None:
+        return
+    try:
+        await room.local_participant.perform_rpc(
+            destination_identity=frontend.identity,
+            method="tool_status",
+            payload=json.dumps({"tool": tool, "status": status, "message": message}),
+        )
+    except Exception as e:
+        logger.warning(f"tool_status RPC failed ({tool}/{status}): {e}")
+
 
 @dataclass
 class MySessionInfo:
@@ -220,11 +247,14 @@ class Assistant(Agent):
         """
         userdata = context.userdata
         logger.info(f"Identifying user: name={name}, phone={phone}")
+        room = get_job_context().room
+        await _send_tool_status(room, "identify_user", "started", "Looking up your account…")
         try:
             user = await identify_user(name, phone)
         except ValueError as e:
             error_msg = str(e)
             logger.warning(f"Failed to identify user: {error_msg}")
+            await _send_tool_status(room, "identify_user", "error", "Unable to look up your account.")
             return (
                 f"The phone number provided is invalid: {error_msg}. "
                 "Please ask the user to repeat their phone number clearly, "
@@ -245,6 +275,7 @@ class Assistant(Agent):
             f"Added to user context: user_id={user['id']}, "
             f"user_name={user['name']}, user_phone={user['phone']}"
         )
+        await _send_tool_status(room, "identify_user", "completed", "Account found.")
         # current_user_data = {"name":user['name'], "phone": user['phone'], "user_id":user['id']}
         # current_user_data_id = userdata.create_object("current_user_data", current_user_data)
         return (
@@ -275,6 +306,8 @@ class Assistant(Agent):
         logger.info(
             f"Fetching slots: date_from={date_from or 'none'}, date_to={date_to or 'none'}"
         )
+        room = get_job_context().room
+        await _send_tool_status(room, "fetch_slots", "started", "Checking available appointment slots…")
 
         slots = await get_available_slots(
             date_from=date_from if date_from else None,
@@ -282,6 +315,7 @@ class Assistant(Agent):
         )
 
         if not slots:
+            await _send_tool_status(room, "fetch_slots", "completed", "No slots found for the requested dates.")
             return (
                 "I don't have any available slots for the requested dates. "
                 "Would you like me to check a different date range?"
@@ -307,6 +341,7 @@ class Assistant(Agent):
             parts.append(f"I have openings on {date_label} at {times_str}")
 
         logger.debug(f"Available slots (parts): {' '.join(parts) + '.'}")
+        await _send_tool_status(room, "fetch_slots", "completed", "Available slots retrieved.")
         return ". ".join(parts) + "."
 
     @function_tool
@@ -333,8 +368,11 @@ class Assistant(Agent):
         logger.info(
             f"Booking appointment: user_id={user_id}, date={date}, start_time={start_time}"
         )
+        room = get_job_context().room
+        await _send_tool_status(room, "book_appointment", "started", "Booking your appointment…")
         slot = await find_slot_by_date_time(date, start_time)
         if slot is None:
+            await _send_tool_status(room, "book_appointment", "error", "No available slot found for the requested time.")
             return (
                 f"No available slot found for {date} at {start_time}. "
                 "Please fetch available slots again and ask the user to choose a different time."
@@ -344,6 +382,7 @@ class Assistant(Agent):
         except ValueError as e:
             error_msg = str(e)
             logger.warning(f"Failed to book appointment: {error_msg}")
+            await _send_tool_status(room, "book_appointment", "error", "Unable to book the appointment.")
             return (
                 f"Unable to book the appointment: {error_msg}. "
                 "Please fetch available slots again and ask the user to choose a different time."
@@ -352,6 +391,7 @@ class Assistant(Agent):
         date_label = _format_date(result["date"])
         time_label = _format_time(result["start_time"])
 
+        await _send_tool_status(room, "book_appointment", "completed", "Appointment booked successfully.")
         return (
             f"Appointment booked successfully. "
             f"The appointment is confirmed for {date_label} at {time_label}. "
@@ -370,10 +410,13 @@ class Assistant(Agent):
         Args:
             user_id: The ID of the user to look up appointments for.
         """
+        room = get_job_context().room
         logger.info(f"Retrieving appointments for user: user_id={user_id}")
+        await _send_tool_status(room, "retrieve_appointments", "started", "Retrieving your appointments…")
         appointments = await get_user_appointments(user_id)
 
         if not appointments:
+            await _send_tool_status(room, "retrieve_appointments", "completed", "No appointments found.")
             return (
                 "I don't see any appointments for this user. "
                 "Would you like to book one?"
@@ -388,6 +431,7 @@ class Assistant(Agent):
                 f"The appointment ID is {appt['id']}."
             )
 
+        await _send_tool_status(room, "retrieve_appointments", "completed", "Appointments retrieved.")
         return " ".join(parts)
 
     @function_tool
@@ -403,15 +447,17 @@ class Assistant(Agent):
             appointment_id: The ID of the appointment to cancel.
             user_id: The ID of the user who owns the appointment.
         """
-        
+        room = get_job_context().room
         logger.info(
             f"Cancelling appointment: appointment_id={appointment_id}, user_id={user_id}"
         )
+        await _send_tool_status(room, "cancel_appointment_by_appointment_id", "started", "Cancelling your appointment…")
         try:
             result = await cancel_appointment_db(appointment_id, user_id)
         except ValueError as e:
             error_msg = str(e)
             logger.warning(f"Failed to cancel appointment: {error_msg}")
+            await _send_tool_status(room, "cancel_appointment_by_appointment_id", "error", "Unable to cancel the appointment.")
             return (
                 f"Unable to cancel the appointment: {error_msg}. "
                 "Please verify the appointment ID and try again."
@@ -420,6 +466,7 @@ class Assistant(Agent):
         date_label = _format_date(result["date"])
         time_label = _format_time(result["start_time"])
 
+        await _send_tool_status(room, "cancel_appointment_by_appointment_id", "completed", "Appointment cancelled successfully.")
         return (
             f"Appointment cancelled successfully. "
             f"The appointment on {date_label} at {time_label} has been cancelled. "
@@ -449,12 +496,13 @@ class Assistant(Agent):
             to_be_booked_date: The date of the new appointment (YYYY-MM-DD).
             to_be_booked_time: The start time of the new appointment (HH:MM).
         """
-        
+        room = get_job_context().room
         logger.info(
             f"Modifying appointment: user_id={user_id}, "
             f"cancel {to_be_cancelled_date} {to_be_cancelled_time}, "
             f"book {to_be_booked_date} {to_be_booked_time}"
         )
+        await _send_tool_status(room, "modify_appointment", "started", "Updating your appointment…")
         try:
             result = await modify_appointment_db(
                 user_id,
@@ -466,6 +514,7 @@ class Assistant(Agent):
         except ValueError as e:
             error_msg = str(e)
             logger.warning(f"Failed to modify appointment: {error_msg}")
+            await _send_tool_status(room, "modify_appointment", "error", "Unable to update the appointment.")
             return (
                 f"Unable to modify the appointment: {error_msg}. "
                 "Please fetch available slots again and ask the user to choose a different time."
@@ -474,6 +523,7 @@ class Assistant(Agent):
         date_label = _format_date(result["date"])
         time_label = _format_time(result["start_time"])
 
+        await _send_tool_status(room, "modify_appointment", "completed", "Appointment updated successfully.")
         return (
             f"Appointment modified successfully. "
             f"The new appointment is confirmed for {date_label} at {time_label}. "
@@ -483,33 +533,47 @@ class Assistant(Agent):
     @function_tool()
     async def end_conversation(self, context: RunContext[MySessionInfo]) -> str:
         """Generate a concise summary of the conversation and send it to the frontend."""
-
+        room = get_job_context().room
+        await _send_tool_status(room, "end_conversation", "started", "Generating conversation summary…")
         context.disallow_interruptions()
-
-        # 1. Ask LLM to generate a summary based on full chat history
-        summary_text = await self.session.generate_reply(
-            instructions=(
-                """Generate a concise summary of the entire conversation so far. Include the following in your summary: 
+        chat_ctx = self.chat_ctx
+        summary_ctx = ChatContext()
+        summary_ctx.add_message(
+            role="system",
+            content="""
+            Generate a concise summary of the entire conversation so far. Include the following in your summary: 
                 - Summary of conversation
                 - List of appointments made/modified/cancelled
                 - User preferences (if any)
                 - Timestamp
-                Respond with only the summary text."""
-            )
+                Respond with only the summary text
+            """,
         )
 
-        # # 2. Send summary to frontend via RPC
-        # try:
-        #     await self.session.room.local_participant.perform_rpc(
-        #         destination_identity=FRONTEND_IDENTITY,
-        #         method="conversation_summary",
-        #         payload=json.dumps({"summary": summary_text}),
-        #     )
-        # except Exception as e:
-        #     print(f"RPC failed: {e}")
+        n_summarized = 0
+        for item in chat_ctx.items:
+            if item.type != "message":
+                continue
+            if item.role not in ("user", "assistant"):
+                continue
+            if item.extra.get("is_summary") is True:  # avoid summarizing previous summaries
+                continue
+            text = (item.text_content or "").strip()
+            if text:
+                summary_ctx.add_message(role="user", content=f"{item.role}: {text}")
+                n_summarized += 1
 
-        # 3. Return summary so the LLM presents it naturally
-        return summary_text
+        if n_summarized == 0:
+            return None
+        summarizer = self.llm 
+        response = await summarizer.chat(chat_ctx=summary_ctx).collect()
+        summary= response.text.strip() if response.text else None
+        
+
+        await _send_tool_status(room, "end_conversation", "completed", summary)
+
+        # 2. Return summary so the LLM presents it naturally
+        return summary
     
     async def on_enter(self) -> None:
         
@@ -553,6 +617,16 @@ async def my_agent(ctx: JobContext):
     # await avatar.start(session, room=ctx.room)
 
     # Start the session, which initializes the voice pipeline and warms up the models
+    @session.on("metrics_collected")
+    def _on_metrics_collected(ev: MetricsCollectedEvent) -> None:
+        metrics.log_metrics(ev.metrics)
+
+    async def log_usage():
+        logger.info(f"Usage: {session.usage}")
+
+    # shutdown callbacks are triggered when the session is over
+    ctx.add_shutdown_callback(log_usage)
+
     await session.start(
         agent=Assistant(),
         room=ctx.room,
