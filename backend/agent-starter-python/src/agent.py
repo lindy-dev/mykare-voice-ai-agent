@@ -106,48 +106,11 @@ def _format_date(date_str: str) -> str:
     month_name = _MONTH_NAMES[month - 1]
     return f"{day_name}, {month_name} {ordinal}"
 
-
 @dataclass
-class UserSessionData:
-    """Store user session data with CRUD operations."""
-
-    data_objects: dict[str, dict[str, Any]] = field(default_factory=dict)
-
-    def create_object(self, object_type: str, object_data: dict[str, Any]) -> str:
-        object_id = str(uuid.uuid4())
-        data_container = {
-            "id": object_id,
-            "type": object_type,
-            "created_at": "2025-05-02T09:00:00Z",
-            "data": object_data,
-        }
-        self.data_objects[object_id] = data_container
-        return object_id
-
-    def read_object(self, object_id: str) -> Optional[dict[str, Any]]:
-        return self.data_objects.get(object_id)
-
-    def update_object(self, object_id: str, update_data: dict[str, Any]) -> bool:
-        if object_id in self.data_objects:
-            self.data_objects[object_id]["data"].update(update_data)
-            self.data_objects[object_id]["updated_at"] = "2025-05-02T09:30:00Z"
-            return True
-        return False
-
-    def delete_object(self, object_id: str) -> bool:
-        if object_id in self.data_objects:
-            del self.data_objects[object_id]
-            return True
-        return False
-
-    def list_objects(
-        self, object_type: Optional[str] = None
-    ) -> dict[str, dict[str, Any]]:
-        if object_type:
-            return {
-                k: v for k, v in self.data_objects.items() if v["type"] == object_type
-            }
-        return self.data_objects
+class MySessionInfo:
+    user_name: str | None = None
+    user_phone: str | None = None
+    user_id: str | None = None
 
 
 class Assistant(Agent):
@@ -242,7 +205,7 @@ class Assistant(Agent):
 
     @function_tool
     async def identify_user(
-        self, context: RunContext[UserSessionData], name: str, phone: str
+        self, context: RunContext[MySessionInfo], name: str, phone: str
     ):
         """Identify or create a user by name and phone number.
 
@@ -269,12 +232,15 @@ class Assistant(Agent):
             )
         # Store user data under the database user_id as the key,
         # so other tools can look it up with userdata.read_object(user_id)
-        userdata.data_objects[user["id"]] = {
-            "id": user["id"],
-            "type": "user",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "data": user,
-        }
+        # userdata.data_objects[user["id"]] = {
+        #     "id": user["id"],
+        #     "type": "user",
+        #     "created_at": datetime.now(timezone.utc).isoformat(),
+        #     "data": user,
+        # }
+        context.userdata.user_id = user['id']
+        context.userdata.user_name = user['phone']
+        context.userdata.user_phone = user['phone']
         logger.info(
             f"Added to user context: user_id={user['id']}, "
             f"user_name={user['name']}, user_phone={user['phone']}"
@@ -282,7 +248,7 @@ class Assistant(Agent):
         # current_user_data = {"name":user['name'], "phone": user['phone'], "user_id":user['id']}
         # current_user_data_id = userdata.create_object("current_user_data", current_user_data)
         return (
-            f"User identified: name is {user['name']}, "
+            f"User identified: name is {user['phone']}, "
             f"phone is {user['phone']}, "
             f"user ID is {user['id']}."
             # f"current user data id is {current_user_data_id}."
@@ -291,7 +257,7 @@ class Assistant(Agent):
     @function_tool
     async def fetch_slots(
         self,
-        context: RunContext[UserSessionData],
+        context: RunContext[MySessionInfo],
         date_from: str = "",
         date_to: str = "",
     ):
@@ -346,7 +312,7 @@ class Assistant(Agent):
     @function_tool
     async def book_appointment(
         self,
-        context: RunContext[UserSessionData],
+        context: RunContext[MySessionInfo],
         date: str,
         start_time: str,
         user_id: str,
@@ -362,9 +328,8 @@ class Assistant(Agent):
             start_time: time of the appointment
             user_id: The ID of the user to book for.
         """
-        userdata = context.userdata
-        user = userdata.read_object(user_id)
-        logger.debug(f"Extracted user id from user context: {user}")
+        user_id = context.userdata.user_id
+        logger.debug(f"Extracted user id from user context: {user_id}")
         logger.info(
             f"Booking appointment: user_id={user_id}, date={date}, start_time={start_time}"
         )
@@ -395,7 +360,7 @@ class Assistant(Agent):
 
     @function_tool
     async def retrieve_appointments(
-        self, context: RunContext[UserSessionData], user_id: str
+        self, context: RunContext[MySessionInfo], user_id: str
     ):
         """Retrieve existing appointments for a user.
 
@@ -405,9 +370,6 @@ class Assistant(Agent):
         Args:
             user_id: The ID of the user to look up appointments for.
         """
-        userdata = context.userdata
-        user = userdata.read_object(user_id)
-        logger.debug(f"Extracted user id from user context: {user}")
         logger.info(f"Retrieving appointments for user: user_id={user_id}")
         appointments = await get_user_appointments(user_id)
 
@@ -430,7 +392,7 @@ class Assistant(Agent):
 
     @function_tool
     async def cancel_appointment_by_appointment_id(
-        self, context: RunContext[UserSessionData], appointment_id: str, user_id: str
+        self, context: RunContext[MySessionInfo], appointment_id: str, user_id: str
     ):
         """Cancel an existing appointment.
 
@@ -441,9 +403,7 @@ class Assistant(Agent):
             appointment_id: The ID of the appointment to cancel.
             user_id: The ID of the user who owns the appointment.
         """
-        userdata = context.userdata
-        user = userdata.read_object(user_id)
-        logger.debug(f"Extracted user id from user context: {user}")
+        
         logger.info(
             f"Cancelling appointment: appointment_id={appointment_id}, user_id={user_id}"
         )
@@ -469,7 +429,7 @@ class Assistant(Agent):
     @function_tool
     async def modify_appointment(
         self,
-        context: RunContext[UserSessionData],
+        context: RunContext[MySessionInfo],
         user_id: str,
         to_be_cancelled_date: str,
         to_be_cancelled_time: str,
@@ -489,9 +449,7 @@ class Assistant(Agent):
             to_be_booked_date: The date of the new appointment (YYYY-MM-DD).
             to_be_booked_time: The start time of the new appointment (HH:MM).
         """
-        userdata = context.userdata
-        user = userdata.read_object(user_id)
-        logger.debug(f"Extracted user id from user context: {user}")
+        
         logger.info(
             f"Modifying appointment: user_id={user_id}, "
             f"cancel {to_be_cancelled_date} {to_be_cancelled_time}, "
@@ -521,6 +479,13 @@ class Assistant(Agent):
             f"The new appointment is confirmed for {date_label} at {time_label}. "
             f"The new appointment ID is {result['appointment_id']}."
         )
+    
+    async def on_enter(self) -> None:
+        
+        await self.session.generate_reply(
+            instructions=f"Greet user and ask the user for their full name and phone number to begin the chat"
+        )
+    
 
 
 server = AgentServer()
@@ -540,8 +505,8 @@ async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
-    userdata = UserSessionData()
-    session = AgentSession[UserSessionData](
+    userdata = MySessionInfo()
+    session = AgentSession[MySessionInfo](
         vad=ctx.proc.userdata["vad"],
         userdata=userdata,
         preemptive_generation=True,
