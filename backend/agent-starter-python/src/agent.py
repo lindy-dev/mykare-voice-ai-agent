@@ -480,6 +480,37 @@ class Assistant(Agent):
             f"The new appointment ID is {result['appointment_id']}."
         )
     
+    @function_tool()
+    async def end_conversation(self, context: RunContext[MySessionInfo]) -> str:
+        """Generate a concise summary of the conversation and send it to the frontend."""
+
+        context.disallow_interruptions()
+
+        # 1. Ask LLM to generate a summary based on full chat history
+        summary_text = await self.session.generate_reply(
+            instructions=(
+                """Generate a concise summary of the entire conversation so far. Include the following in your summary: 
+                - Summary of conversation
+                - List of appointments made/modified/cancelled
+                - User preferences (if any)
+                - Timestamp
+                Respond with only the summary text."""
+            )
+        )
+
+        # # 2. Send summary to frontend via RPC
+        # try:
+        #     await self.session.room.local_participant.perform_rpc(
+        #         destination_identity=FRONTEND_IDENTITY,
+        #         method="conversation_summary",
+        #         payload=json.dumps({"summary": summary_text}),
+        #     )
+        # except Exception as e:
+        #     print(f"RPC failed: {e}")
+
+        # 3. Return summary so the LLM presents it naturally
+        return summary_text
+    
     async def on_enter(self) -> None:
         
         await self.session.generate_reply(
