@@ -26,7 +26,7 @@ export function useToolCallStatus() {
 
       // Auto-clear after completion/error
       if (parsed.status === 'completed' || parsed.status === 'error') {
-        setTimeout(() => setToolStatus(null), 2000);
+        setTimeout(() => setToolStatus(null), 7000);
       }
 
       return 'ok';

@@ -66,7 +66,7 @@ export const WelcomeView = ({
         <WelcomeImage />
 
         <p className="text-foreground max-w-prose pt-1 leading-6 font-medium">
-          Chat live with your voice AI agent
+          Chat live with mykare.ai voice AI agent
         </p>
 
         <form onSubmit={handleSubmit} className="mt-6 flex w-64 flex-col gap-3">
@@ -100,14 +100,14 @@ export const WelcomeView = ({
 
       <div className="fixed bottom-5 left-0 flex w-full items-center justify-center">
         <p className="text-muted-foreground max-w-prose pt-1 text-xs leading-5 font-normal text-pretty md:text-sm">
-          Need help getting set up? Check out the{' '}
+          Built by{' '}
           <a
             target="_blank"
             rel="noopener noreferrer"
-            href="https://docs.livekit.io/agents/start/voice-ai/"
+            href="https://shreyasrao.in/portfolio-all/"
             className="underline"
           >
-            Voice AI quickstart
+            Shreyas Rao
           </a>
           .
         </p>

@@ -213,7 +213,7 @@ export function AgentSessionView_01({
     toolStatus?.status === 'completed';
 
   const statusText = toolStatus
-    ? `tool: ${toolStatus.tool}, status: ${toolStatus.status}, message: ${toolStatus.message}`
+    ? `Tool called: ${toolStatus.tool}, Status: ${toolStatus.status}, Message: ${toolStatus.message}`
     : preConnectMessage;
 
   return (
