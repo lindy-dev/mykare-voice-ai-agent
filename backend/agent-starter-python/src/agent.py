@@ -24,7 +24,8 @@ from livekit.agents import (
 )
 from livekit.plugins import ai_coustics, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
-
+from livekit.plugins import tavus
+import os
 from database import (
     book_slot,
     find_slot_by_date_time,
@@ -42,7 +43,8 @@ from database import (
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
-
+tavus_api_key = os.getenv("TAVUS_API_KEY")
+# logger.debug(f"Loaded Tavus API key: {'set' if tavus_api_key else 'not set'}")
 AGENT_MODEL = "openai/gpt-5.3-chat-latest"
 
 _DAY_NAMES = [
@@ -568,7 +570,7 @@ class Assistant(Agent):
         summarizer = self.llm 
         response = await summarizer.chat(chat_ctx=summary_ctx).collect()
         summary= response.text.strip() if response.text else None
-        
+        logger.debug(f"Generated conversation summary: {summary}")
 
         await _send_tool_status(room, "end_conversation", "completed", summary)
 
@@ -615,7 +617,15 @@ async def my_agent(ctx: JobContext):
     # )
     # # Start the avatar and wait for it to join
     # await avatar.start(session, room=ctx.room)
-
+    # "default_replica_id": "r72f7f7f7c8b"
+    # {"persona_id":"p885c08bf44c","persona_name":"Mykare Persona","created_at":"2026-04-29T16:45:39.988597Z"}
+    avatar = tavus.AvatarSession(
+        replica_id="r72f7f7f7c8b",  # ID of the Tavus replica to use
+        persona_id="p885c08bf44c",  # ID of the Tavus persona to use (see preceding section for configuration details)
+        api_key=tavus_api_key,  # Your Tavus API key (set in .env.local and loaded with load_dotenv
+    )
+    # Start the avatar and wait for it to join
+    await avatar.start(session, room=ctx.room)
     # Start the session, which initializes the voice pipeline and warms up the models
     @session.on("metrics_collected")
     def _on_metrics_collected(ev: MetricsCollectedEvent) -> None:
