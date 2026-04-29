@@ -1,3 +1,6 @@
+'use client';
+
+import { type FormEvent, useState } from 'react';
 import { Button } from '@/components/ui/button';
 
 function WelcomeImage() {
@@ -19,15 +22,44 @@ function WelcomeImage() {
 }
 
 interface WelcomeViewProps {
-  startButtonText: string;
   onStartCall: () => void;
 }
 
 export const WelcomeView = ({
-  startButtonText,
   onStartCall,
   ref,
 }: React.ComponentProps<'div'> & WelcomeViewProps) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError('');
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error || 'Invalid username or password');
+        return;
+      }
+
+      onStartCall();
+    } catch {
+      setError('Login failed. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div ref={ref}>
       <section className="bg-background flex flex-col items-center justify-center text-center">
@@ -37,13 +69,33 @@ export const WelcomeView = ({
           Chat live with your voice AI agent
         </p>
 
-        <Button
-          size="lg"
-          onClick={onStartCall}
-          className="mt-6 w-64 rounded-full font-mono text-xs font-bold tracking-wider uppercase"
-        >
-          {startButtonText}
-        </Button>
+        <form onSubmit={handleSubmit} className="mt-6 flex w-64 flex-col gap-3">
+          <input
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            required
+            className="border-border bg-background text-foreground placeholder:text-muted-foreground focus:ring-primary h-9 w-full rounded-md border px-3 text-sm outline-none focus:ring-2"
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            className="border-border bg-background text-foreground placeholder:text-muted-foreground focus:ring-primary h-9 w-full rounded-md border px-3 text-sm outline-none focus:ring-2"
+          />
+          <Button
+            type="submit"
+            disabled={isLoading}
+            size="lg"
+            className="w-full rounded-full font-mono text-xs font-bold tracking-wider uppercase"
+          >
+            {isLoading ? 'Signing in...' : 'Sign In'}
+          </Button>
+          {error && <p className="text-destructive text-sm">{error}</p>}
+        </form>
       </section>
 
       <div className="fixed bottom-5 left-0 flex w-full items-center justify-center">

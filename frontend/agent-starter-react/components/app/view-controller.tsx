@@ -40,12 +40,7 @@ export function ViewController({ appConfig }: ViewControllerProps) {
     <AnimatePresence mode="wait">
       {/* Welcome view */}
       {!isConnected && (
-        <MotionWelcomeView
-          key="welcome"
-          {...VIEW_MOTION_PROPS}
-          startButtonText={appConfig.startButtonText}
-          onStartCall={start}
-        />
+        <MotionWelcomeView key="welcome" {...VIEW_MOTION_PROPS} onStartCall={start} />
       )}
       {/* Session view */}
       {isConnected && (

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
+import { toast } from 'sonner';
 import { useAgent, useSessionContext, useSessionMessages } from '@livekit/components-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
 import {
@@ -9,6 +10,7 @@ import {
   type AgentControlBarControls,
 } from '@/components/agents-ui/agent-control-bar';
 import { Shimmer } from '@/components/ai-elements/shimmer';
+import { useToolCallStatus } from '@/hooks/use-tool-call-status';
 import { cn } from '@/lib/shadcn/utils';
 import { TileLayout } from './tile-view';
 
@@ -123,7 +125,7 @@ export interface AgentSessionView_01Props {
   /**
    * Enables or disables screen sharing controls in the bottom control bar.
    *
-   * @default true
+   * @default false
    */
   supportsScreenShare?: boolean;
   /**
@@ -159,7 +161,7 @@ export function AgentSessionView_01({
   preConnectMessage = 'Agent is listening, ask it a question',
   supportsChatInput = true,
   supportsVideoInput = true,
-  supportsScreenShare = true,
+  supportsScreenShare = false,
   isPreConnectBufferEnabled = true,
 
   audioVisualizerType,
@@ -180,6 +182,7 @@ export function AgentSessionView_01({
   const [chatOpen, setChatOpen] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const { state: agentState } = useAgent();
+  const { toolStatus } = useToolCallStatus();
 
   const controls: AgentControlBarControls = {
     leave: true,
@@ -197,6 +200,21 @@ export function AgentSessionView_01({
       scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
     }
   }, [messages]);
+
+  useEffect(() => {
+    if (toolStatus?.status === 'error') {
+      toast.error(toolStatus.message);
+    }
+  }, [toolStatus]);
+
+  const showStatusMessage =
+    (isPreConnectBufferEnabled && messages.length === 0) ||
+    toolStatus?.status === 'started' ||
+    toolStatus?.status === 'completed';
+
+  const statusText = toolStatus
+    ? `tool: ${toolStatus.tool}, status: ${toolStatus.status}, message: ${toolStatus.message}`
+    : preConnectMessage;
 
   return (
     <section
@@ -241,22 +259,20 @@ export function AgentSessionView_01({
         {...BOTTOM_VIEW_MOTION_PROPS}
         className="absolute inset-x-3 bottom-0 z-50 md:inset-x-12"
       >
-        {/* Pre-connect message */}
-        {isPreConnectBufferEnabled && (
-          <AnimatePresence>
-            {messages.length === 0 && (
-              <MotionMessage
-                key="pre-connect-message"
-                duration={2}
-                aria-hidden={messages.length > 0}
-                {...SHIMMER_MOTION_PROPS}
-                className="pointer-events-none mx-auto block w-full max-w-2xl pb-4 text-center text-sm font-semibold"
-              >
-                {preConnectMessage}
-              </MotionMessage>
-            )}
-          </AnimatePresence>
-        )}
+        {/* Pre-connect / tool-call status message */}
+        <AnimatePresence>
+          {showStatusMessage && (
+            <MotionMessage
+              key="pre-connect-message"
+              duration={2}
+              aria-hidden={!showStatusMessage}
+              {...SHIMMER_MOTION_PROPS}
+              className="pointer-events-none mx-auto block w-full max-w-2xl pb-4 text-center text-sm font-semibold"
+            >
+              {statusText}
+            </MotionMessage>
+          )}
+        </AnimatePresence>
         <div className="bg-background relative mx-auto max-w-2xl pb-3 md:pb-12">
           <Fade bottom className="absolute inset-x-0 top-0 h-4 -translate-y-full" />
           <AgentControlBar
