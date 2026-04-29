@@ -1,4 +1,8 @@
 import logging
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -16,13 +20,134 @@ from livekit.agents import (
 from livekit.plugins import ai_coustics, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-from database import identify_user
+from database import (
+    book_slot,
+    find_slot_by_date_time,
+    get_available_slots,
+    get_user_appointments,
+    identify_user,
+)
+from database import (
+    cancel_appointment as cancel_appointment_db,
+)
+from database import (
+    modify_appointment as modify_appointment_db,
+)
 
 logger = logging.getLogger("agent")
 
 load_dotenv(".env.local")
 
 AGENT_MODEL = "openai/gpt-5.3-chat-latest"
+
+_DAY_NAMES = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
+
+_MONTH_NAMES = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+]
+
+
+def _get_ordinal(n: int) -> str:
+    if 11 <= (n % 100) <= 13:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _format_time(time_str: str) -> str:
+    parts = time_str.split(":")
+    h = int(parts[0])
+    m = int(parts[1])
+    period = (
+        "in the morning"
+        if h < 12
+        else "in the afternoon"
+        if h < 18
+        else "in the evening"
+    )
+    if h == 0:
+        display_h = 12
+    elif h > 12:
+        display_h = h - 12
+    else:
+        display_h = h
+
+    if m == 0:
+        return f"{display_h} {period}"
+    return f"{display_h} thirty {period}"
+
+
+def _format_date(date_str: str) -> str:
+    parts = date_str.split("-")
+    day = int(parts[2])
+    month = int(parts[1])
+    day_name = _DAY_NAMES[datetime.strptime(date_str, "%Y-%m-%d").weekday()]
+    ordinal = _get_ordinal(day)
+    month_name = _MONTH_NAMES[month - 1]
+    return f"{day_name}, {month_name} {ordinal}"
+
+
+@dataclass
+class UserSessionData:
+    """Store user session data with CRUD operations."""
+
+    data_objects: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def create_object(self, object_type: str, object_data: dict[str, Any]) -> str:
+        object_id = str(uuid.uuid4())
+        data_container = {
+            "id": object_id,
+            "type": object_type,
+            "created_at": "2025-05-02T09:00:00Z",
+            "data": object_data,
+        }
+        self.data_objects[object_id] = data_container
+        return object_id
+
+    def read_object(self, object_id: str) -> Optional[dict[str, Any]]:
+        return self.data_objects.get(object_id)
+
+    def update_object(self, object_id: str, update_data: dict[str, Any]) -> bool:
+        if object_id in self.data_objects:
+            self.data_objects[object_id]["data"].update(update_data)
+            self.data_objects[object_id]["updated_at"] = "2025-05-02T09:30:00Z"
+            return True
+        return False
+
+    def delete_object(self, object_id: str) -> bool:
+        if object_id in self.data_objects:
+            del self.data_objects[object_id]
+            return True
+        return False
+
+    def list_objects(
+        self, object_type: Optional[str] = None
+    ) -> dict[str, dict[str, Any]]:
+        if object_type:
+            return {
+                k: v for k, v in self.data_objects.items() if v["type"] == object_type
+            }
+        return self.data_objects
 
 
 class Assistant(Agent):
@@ -100,10 +225,25 @@ class Assistant(Agent):
             - Do not repeat yourself unnecessarily.
             - Do not use technical jargon or healthcare terminology that the patient may not understand.
             """,
+            stt=openai.STT(
+                model="gpt-4o-transcribe",
+            ),
+            llm=inference.LLM(
+                model="openai/gpt-5.3-chat-latest",
+                provider="openai",
+                extra_kwargs={"reasoning_effort": "low"},
+            ),
+            tts=openai.TTS(
+                model="gpt-4o-mini-tts",
+                voice="ash",
+                instructions="Speak in a friendly and conversational tone.",
+            ),
         )
 
     @function_tool
-    async def identify_user(self, context: RunContext, name: str, phone: str):
+    async def identify_user(
+        self, context: RunContext[UserSessionData], name: str, phone: str
+    ):
         """Identify or create a user by name and phone number.
 
         Use this tool to register a new user or look up an existing user.
@@ -115,6 +255,7 @@ class Assistant(Agent):
             phone: The phone number of the user (unique identifier). Must include
                 country code with + prefix (e.g., +1 234 567 8900).
         """
+        userdata = context.userdata
         logger.info(f"Identifying user: name={name}, phone={phone}")
         try:
             user = await identify_user(name, phone)
@@ -126,28 +267,260 @@ class Assistant(Agent):
                 "Please ask the user to repeat their phone number clearly, "
                 "including country code with + prefix."
             )
+        # Store user data under the database user_id as the key,
+        # so other tools can look it up with userdata.read_object(user_id)
+        userdata.data_objects[user["id"]] = {
+            "id": user["id"],
+            "type": "user",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "data": user,
+        }
+        logger.info(
+            f"Added to user context: user_id={user['id']}, "
+            f"user_name={user['name']}, user_phone={user['phone']}"
+        )
+        # current_user_data = {"name":user['name'], "phone": user['phone'], "user_id":user['id']}
+        # current_user_data_id = userdata.create_object("current_user_data", current_user_data)
         return (
             f"User identified: name is {user['name']}, "
             f"phone is {user['phone']}, "
             f"user ID is {user['id']}."
+            # f"current user data id is {current_user_data_id}."
         )
 
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
+    @function_tool
+    async def fetch_slots(
+        self,
+        context: RunContext[UserSessionData],
+        date_from: str = "",
+        date_to: str = "",
+    ):
+        """Fetch available appointment time slots.
+
+        Use this tool to find available time slots for booking an appointment.
+        The agent should present the slots conversationally to the patient.
+
+        Args:
+            date_from: Optional start date filter in ISO format (YYYY-MM-DD).
+                If not provided, returns slots starting from tomorrow.
+            date_to: Optional end date filter in ISO format (YYYY-MM-DD).
+                If not provided, returns slots for the next 5 business days.
+        """
+        logger.info(
+            f"Fetching slots: date_from={date_from or 'none'}, date_to={date_to or 'none'}"
+        )
+
+        slots = await get_available_slots(
+            date_from=date_from if date_from else None,
+            date_to=date_to if date_to else None,
+        )
+
+        if not slots:
+            return (
+                "I don't have any available slots for the requested dates. "
+                "Would you like me to check a different date range?"
+            )
+
+        grouped: dict[str, list[str]] = {}
+        for slot in slots:
+            date_key = slot["date"]
+            if date_key not in grouped:
+                grouped[date_key] = []
+            grouped[date_key].append(slot["start_time"])
+
+        parts = []
+        for date_key, times in grouped.items():
+            date_label = _format_date(date_key)
+            time_labels = [_format_time(t) for t in times]
+            if len(time_labels) == 1:
+                times_str = time_labels[0]
+            elif len(time_labels) == 2:
+                times_str = f"{time_labels[0]} and {time_labels[1]}"
+            else:
+                times_str = f"{', '.join(time_labels[:-1])} and {time_labels[-1]}"
+            parts.append(f"I have openings on {date_label} at {times_str}")
+
+        logger.debug(f"Available slots (parts): {' '.join(parts) + '.'}")
+        return ". ".join(parts) + "."
+
+    @function_tool
+    async def book_appointment(
+        self,
+        context: RunContext[UserSessionData],
+        date: str,
+        start_time: str,
+        user_id: str,
+    ):
+        """Book an appointment for the given user and slot.
+
+        Use this tool to confirm and save a booking after the patient has
+        selected a time slot. The slot_id and user_id must have been obtained
+        from previous tool calls.
+
+        Args:
+            date: date filter in ISO format (YYYY-MM-DD).
+            start_time: time of the appointment
+            user_id: The ID of the user to book for.
+        """
+        userdata = context.userdata
+        user = userdata.read_object(user_id)
+        logger.debug(f"Extracted user id from user context: {user}")
+        logger.info(
+            f"Booking appointment: user_id={user_id}, date={date}, start_time={start_time}"
+        )
+        slot = await find_slot_by_date_time(date, start_time)
+        if slot is None:
+            return (
+                f"No available slot found for {date} at {start_time}. "
+                "Please fetch available slots again and ask the user to choose a different time."
+            )
+        try:
+            result = await book_slot(slot["id"], user_id)
+        except ValueError as e:
+            error_msg = str(e)
+            logger.warning(f"Failed to book appointment: {error_msg}")
+            return (
+                f"Unable to book the appointment: {error_msg}. "
+                "Please fetch available slots again and ask the user to choose a different time."
+            )
+
+        date_label = _format_date(result["date"])
+        time_label = _format_time(result["start_time"])
+
+        return (
+            f"Appointment booked successfully. "
+            f"The appointment is confirmed for {date_label} at {time_label}. "
+            f"The appointment ID is {result['appointment_id']}."
+        )
+
+    @function_tool
+    async def retrieve_appointments(
+        self, context: RunContext[UserSessionData], user_id: str
+    ):
+        """Retrieve existing appointments for a user.
+
+        Use this tool to look up a user's appointment history.
+        The agent should present the results conversationally to the patient.
+
+        Args:
+            user_id: The ID of the user to look up appointments for.
+        """
+        userdata = context.userdata
+        user = userdata.read_object(user_id)
+        logger.debug(f"Extracted user id from user context: {user}")
+        logger.info(f"Retrieving appointments for user: user_id={user_id}")
+        appointments = await get_user_appointments(user_id)
+
+        if not appointments:
+            return (
+                "I don't see any appointments for this user. "
+                "Would you like to book one?"
+            )
+
+        parts = []
+        for appt in appointments:
+            date_label = _format_date(appt["date"])
+            time_label = _format_time(appt["start_time"])
+            parts.append(
+                f"You have an appointment on {date_label} at {time_label}. "
+                f"The appointment ID is {appt['id']}."
+            )
+
+        return " ".join(parts)
+
+    @function_tool
+    async def cancel_appointment_by_appointment_id(
+        self, context: RunContext[UserSessionData], appointment_id: str, user_id: str
+    ):
+        """Cancel an existing appointment.
+
+        Use this tool to cancel an appointment after confirming with the patient.
+        The slot will be freed and made available for others.
+
+        Args:
+            appointment_id: The ID of the appointment to cancel.
+            user_id: The ID of the user who owns the appointment.
+        """
+        userdata = context.userdata
+        user = userdata.read_object(user_id)
+        logger.debug(f"Extracted user id from user context: {user}")
+        logger.info(
+            f"Cancelling appointment: appointment_id={appointment_id}, user_id={user_id}"
+        )
+        try:
+            result = await cancel_appointment_db(appointment_id, user_id)
+        except ValueError as e:
+            error_msg = str(e)
+            logger.warning(f"Failed to cancel appointment: {error_msg}")
+            return (
+                f"Unable to cancel the appointment: {error_msg}. "
+                "Please verify the appointment ID and try again."
+            )
+
+        date_label = _format_date(result["date"])
+        time_label = _format_time(result["start_time"])
+
+        return (
+            f"Appointment cancelled successfully. "
+            f"The appointment on {date_label} at {time_label} has been cancelled. "
+            f"The appointment ID was {result['id']}."
+        )
+
+    @function_tool
+    async def modify_appointment(
+        self,
+        context: RunContext[UserSessionData],
+        user_id: str,
+        to_be_cancelled_date: str,
+        to_be_cancelled_time: str,
+        to_be_booked_date: str,
+        to_be_booked_time: str,
+    ):
+        """Modify an existing appointment by cancelling one and booking a new slot.
+
+        Use this tool to change an appointment to a different time slot after
+        confirming with the patient. The old appointment will be cancelled,
+        the old slot freed, and the new slot booked.
+
+        Args:
+            user_id: The ID of the user who owns the appointment.
+            to_be_cancelled_date: The date of the appointment to cancel (YYYY-MM-DD).
+            to_be_cancelled_time: The start time of the appointment to cancel (HH:MM).
+            to_be_booked_date: The date of the new appointment (YYYY-MM-DD).
+            to_be_booked_time: The start time of the new appointment (HH:MM).
+        """
+        userdata = context.userdata
+        user = userdata.read_object(user_id)
+        logger.debug(f"Extracted user id from user context: {user}")
+        logger.info(
+            f"Modifying appointment: user_id={user_id}, "
+            f"cancel {to_be_cancelled_date} {to_be_cancelled_time}, "
+            f"book {to_be_booked_date} {to_be_booked_time}"
+        )
+        try:
+            result = await modify_appointment_db(
+                user_id,
+                to_be_cancelled_date,
+                to_be_cancelled_time,
+                to_be_booked_date,
+                to_be_booked_time,
+            )
+        except ValueError as e:
+            error_msg = str(e)
+            logger.warning(f"Failed to modify appointment: {error_msg}")
+            return (
+                f"Unable to modify the appointment: {error_msg}. "
+                "Please fetch available slots again and ask the user to choose a different time."
+            )
+
+        date_label = _format_date(result["date"])
+        time_label = _format_time(result["start_time"])
+
+        return (
+            f"Appointment modified successfully. "
+            f"The new appointment is confirmed for {date_label} at {time_label}. "
+            f"The new appointment ID is {result['appointment_id']}."
+        )
 
 
 server = AgentServer()
@@ -167,51 +540,13 @@ async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
-
-    # Set up a voice AI pipeline using OpenAI, Cartesia, Deepgram, and the LiveKit turn detector
-    session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
-        # stt=inference.STT(model="deepgram/nova-3", language="multi"),
-        stt=openai.STT(
-            model="gpt-4o-transcribe",
-        ),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
-        # llm=inference.LLM(model=AGENT_MODEL),
-        llm=inference.LLM(
-            model="openai/gpt-5.3-chat-latest",
-            provider="openai",
-            extra_kwargs={"reasoning_effort": "low"},
-        ),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        # # tts=inference.TTS(
-        #     model="cartesia/sonic-3", voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"
-        # ),
-        tts=openai.TTS(
-            model="gpt-4o-mini-tts",
-            voice="ash",
-            instructions="Speak in a friendly and conversational tone.",
-        ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
-        turn_detection=MultilingualModel(),
+    userdata = UserSessionData()
+    session = AgentSession[UserSessionData](
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
+        userdata=userdata,
         preemptive_generation=True,
+        turn_detection=MultilingualModel(),
     )
-
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
 
     # # Add a virtual avatar to the session, if desired
     # # For other providers, see https://docs.livekit.io/agents/models/avatar/
