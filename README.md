@@ -5,7 +5,7 @@ A production-grade, real-time voice AI assistant for healthcare appointment book
 **Demo:**
 
 <video controls width="100%">
-  <source src="assets/demo.mp4" type="video/mp4">
+  <source src="[assets/demo.mp4](https://github.com/lindy-dev/mykare-voice-ai-agent/blob/master/assets/demo.mp4)" type="video/mp4">
   Your browser does not support the video tag. Watch the demo on [YouTube](https://youtu.be/42f8CcbzagY).
 </video>
 
