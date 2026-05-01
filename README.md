@@ -3,11 +3,8 @@
 A production-grade, real-time voice AI assistant for healthcare appointment booking. Built with [LiveKit Agents](https://livekit.io/), the agent hears, understands, and speaks naturally while displaying a synchronized AI avatar — all within a 3–5 second response latency.
 
 **Demo:**
-
-<video controls width="100%">
-  <source src="[assets/demo.mp4](https://github.com/lindy-dev/mykare-voice-ai-agent/blob/master/assets/demo.mp4)" type="video/mp4">
-  Your browser does not support the video tag. Watch the demo on [YouTube](https://youtu.be/42f8CcbzagY).
-</video>
+Youtube link: [YouTube](https://youtu.be/42f8CcbzagY)
+Github demo link: [assets/demo.mp4](https://github.com/lindy-dev/mykare-voice-ai-agent/blob/master/assets/demo.mp4)
 
 ## Features
 
